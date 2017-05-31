@@ -21,38 +21,56 @@ definition(
     category: "My Apps",
     iconUrl: "https://cdn.rawgit.com/Kriskit/SmartThingsPublic/master/smartapps/kriskit/trendsetter/icon.png",
     iconX2Url: "https://cdn.rawgit.com/Kriskit/SmartThingsPublic/master/smartapps/kriskit/trendsetter/icon@2x.png",
-    iconX3Url: "https://cdn.rawgit.com/Kriskit/SmartThingsPublic/master/smartapps/kriskit/trendsetter/icon@3x.png")
+    iconX3Url: "https://cdn.rawgit.com/Kriskit/SmartThingsPublic/master/smartapps/kriskit/trendsetter/icon@3x.png",
+    parent: "kriskit.trendsetter:Trend Setter")
     
 def version() {
-	return "1.0"
+	return "1.2"
 }
 
 def typeDefinitions() {
 	return [
         [
+        	id: "switch",
         	type: "switch", 
             singular: "Switch", 
             plural: "Switches", 
-            deviceType: "Switch Group Device",
+            groupDeviceType: "Switch Group Device",
+            experimental: true,
             attributes: [
             		[name: "switch"]
             	]
         ],
         [
+        	id: "switchLevel",
         	type: "switchLevel", 
             singular: "Dimmer", 
             plural: "Dimmers", 
-            deviceType: "Dimmer Group Device",
+            groupDeviceType: "Dimmer Group Device",
             inherits: "switch",
+            experimental: true,
             attributes: [
             	[name: "level"]
             ]
         ],
         [
+        	id: "colorTemperature",
+        	type: "colorTemperature", 
+            singular: "Color Temperature Light", 
+            plural: "Color Temperature Lights", 
+            groupDeviceType: "Color Temperature Light Group Device",
+            inherits: "switchLevel",
+            experimental: true,
+            attributes: [
+            	[name: "colorTemperature"]
+            ]
+        ],
+        [
+        	id: "colorControl",
         	type: "colorControl",
             singular: "Colorful Light",
             plural: "Colorful Lights",
-            deviceType: "Colorful Light Group Device",
+            groupDeviceType: "Colorful Light Group Device",
             inherits: "switchLevel",
             attributes: [
             	[name: "hue"],
@@ -61,10 +79,23 @@ def typeDefinitions() {
             ]
         ],
         [
+        	id: "colorTempLight",
+        	type: "colorControl", 
+            singular: "Colorful Temperature Light", 
+            plural: "Colorful Temperature Lights", 
+            groupDeviceType: "Colorful Temperature Light Group Device",
+            inherits: "colorControl",
+            experimental: true,
+            attributes: [
+            	[name: "colorTemperature"]
+            ]
+        ],
+        [
+        	id: "powerMeter",
         	type: "powerMeter",
             singular: "Power Meter",
             plural: "Power Meters",
-            deviceType: "Power Meter Group Device",
+            groupDeviceType: "Power Meter Group Device",
             attributes: [
             	[name: "power"]
             ]
@@ -95,7 +126,7 @@ def configure() {
             section(title: controller == null ? "Grouping" : null) {
         		label title: "Group Name", required: true
             
-                input "devices", "capability.${deviceType}", title: "${definition.plural}", multiple: true, required: true, submitOnChange: controller != null
+                input "devices", "capability.${definition.type}", title: "${definition.plural}", multiple: true, required: true, submitOnChange: controller != null
 
                 if (selectedDevicesContainsController()) {
                     paragraph "WARNING: You have selected the controller ${definition.singular.toLowerCase()} for this group. This will likely cause unexpected behaviour.\n\nPlease uncheck the '${controller.displayName}' from the selected ${definition.plural.toLowerCase()}.", 
@@ -110,7 +141,15 @@ def configure() {
             }
             
             if (definition.advanced) {
-            	section(title: "Advanced", hidden: true, hideable: true) {
+            	section(title: "Advanced", hidden: true, hideable: true) {}
+            }
+            
+            if (definition.experimental) {
+            	section(title: "Experimental", hidden: true, hideable: true) {
+					input "bidirectional", "bool", title: "Bidirectional", defaultValue: false, required: true
+                    paragraph "Devices in the group will automatically synchronise other devices in the group when their states change."
+                    paragraph "WARNING: This is experimental. Behaviour may not work as expected.", 
+                        image: "https://cdn2.iconfinder.com/data/icons/freecns-cumulus/32/519791-101_Warning-512.png"
                 }
             }
         }
@@ -124,11 +163,15 @@ def installed() {
 	initialize()
 }
 
+def uninstalled() {
+	log.debug "Uninstalled"
+}
+
 def installControllerDevice() {
 	def definition = getTypeDefinition()
 
 	log.debug "Installing switch group controller device..."
-	addChildDevice("kriskit.trendSetter", definition.deviceType, UUID.randomUUID().toString(), null, ["name": deviceName, "label": deviceName, completedSetup: true])
+	addChildDevice("kriskit.trendSetter", definition.groupDeviceType, UUID.randomUUID().toString(), null, ["name": deviceName, "label": deviceName, completedSetup: true])
 }
 
 def updated() {
@@ -164,6 +207,19 @@ def onDeviceAttributeChange(evt) {
     	namesToCheck.push(evt.name)
         
 	atomicState.namesToCheck = namesToCheck
+    
+    if (bidirectional) {    
+        def controller = getControllerDevice()
+        def commandInfo = controller.mapAttributeToCommand(evt.name, evt.value)        
+        def devicesToUse = devices?.findAll {
+        	it.id != evt.device.id
+        }
+        log.debug "Updating $devicesToUse to match ${evt.device}..."
+        devicesToUse?.each {
+        	runCommand(it, commandInfo.command, commandInfo.arguments)
+        }
+    }
+    
     runIn(1, "updateControllerState")
 }
 
@@ -187,7 +243,12 @@ def updateControllerState(namesToCheck) {
 }
 
 def performGroupCommand(command, arguments = null) {
-	runCommand(devices, command, arguments ?: []) 
+	def target = devices
+
+	if (bidirectional)
+    	target = devices?.find { true }
+
+	runCommand(target, command, arguments ?: []) 
 }
 
 def runCommand(target, command, args) {
@@ -216,7 +277,7 @@ def getTypeDefinitions() {
     
     definitions?.each { definition ->
     	if (definition.inherits)
-        	definition = mergeAttributes(definition, definitions.find { it.type == definition.inherits })
+        	definition = mergeAttributes(definition, definitions.find { it.id == definition.inherits })
     
     	result.push(definition)
     }
@@ -234,7 +295,7 @@ def mergeAttributes(definition, inheritedDefinition) {
     
     if (inheritedDefinition.inherits) {
     	def definitions = typeDefinitions()
-    	definition = mergeAttributes(definition, definitions.find { it.type == inheritedDefinition.inherits })
+    	definition = mergeAttributes(definition, definitions.find { it.id == inheritedDefinition.inherits })
 	}
     
     return definition
@@ -248,22 +309,22 @@ def getTypeDefinition() {
 	return getTypeDefinition(deviceType)
 }
 
-def getTypeDefinition(type) {
+def getTypeDefinition(id) {
 	return getTypeDefinitions().find {
-    	it.type == type
+    	it.id == id
     }
 }
 
 def getDeviceTypeOptions() {
 	return getTypeDefinitions().collect {
-    	["${it.type}": it.singular]
+    	["${it.id}": it.singular]
     }
 }
 
 def selectedDevicesContainsController() {
 	def controller = getControllerDevice()
 	return devices?.any { 
-    	it.deviceNetworkId == controller.deviceNetworkId 
+    	it?.deviceNetworkId == controller?.deviceNetworkId 
     }
 }
 
